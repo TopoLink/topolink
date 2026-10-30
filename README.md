@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # needed to diff against the base branch
-      - uses: topolink/topolink@v1
+      - uses: TopoLink/topolink@v1
         with:
           fail-on: high   # none | critical | high | medium
           # diff: auto     # default: analyze only this PR's diff; set '' for a full scan
