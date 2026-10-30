@@ -41,6 +41,8 @@ The action:
 
 ## Quick start — CLI
 
+> Building from source needs a C toolchain (`gcc`/`clang`): tree-sitter grammars are C code. The Docker image already bundles everything.
+
 ```bash
 go install github.com/topolink/topolink/cmd/topolink@latest
 
