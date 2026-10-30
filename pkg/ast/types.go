@@ -16,6 +16,17 @@ func LastSegment(s string) string {
 	return s
 }
 
+// MiddlewareName 归一化中间件调用文本：Auth(jwtSecret) -> Auth，
+// pkg.Auth() -> Auth。原始调用仍保留在 EntryNode.Middleware 中用于展示，
+// 但语义单元 ID 与规则匹配使用归一化后的函数名。
+func MiddlewareName(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '('); i >= 0 {
+		s = s[:i]
+	}
+	return LastSegment(s)
+}
+
 // Symbol 标识一个代码符号（函数 / 方法）。
 type Symbol struct {
 	Package string // 包名或命名空间

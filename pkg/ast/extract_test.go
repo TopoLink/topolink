@@ -3,6 +3,7 @@ package ast
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/topolink/topolink/pkg/lang"
@@ -357,7 +358,7 @@ func TestExtractMiddleware(t *testing.T) {
 	if !containsStr(byID["http:GET:/orders"].Middleware, "AuthMiddleware()") {
 		t.Errorf("/orders middleware = %v, want AuthMiddleware()", byID["http:GET:/orders"].Middleware)
 	}
-	mw := byID["http:POST:/x"].Middleware
+	mw := byID["http:POST:/api/x"].Middleware
 	if !containsStr(mw, "RateLimit()") || !containsStr(mw, "AuthMiddleware()") {
 		t.Errorf("/x middleware = %v, want RateLimit() + AuthMiddleware()", mw)
 	}
@@ -392,12 +393,71 @@ func register() {
 
 	var got []string
 	for _, e := range res1.Entries {
-		if e.ID == "http:GET:/orders" {
+		if e.ID == "http:GET:/api/orders" {
 			got = e.Middleware
 		}
 	}
 	if !containsStr(got, "AuthMiddleware()") {
 		t.Errorf("cross-file middleware = %v, want AuthMiddleware()", got)
+	}
+}
+
+func TestExtractGinMethodHandler(t *testing.T) {
+	src := `package sample
+
+func setup(h *Handlers) {
+	r := gin.Default()
+	r.GET("/orders", h.ListOrders)
+}
+`
+	path, tree, code := parseSample(t, src)
+	defer tree.Close()
+
+	qs := mustQuerySet(t, []string{"go/gin.scm"})
+	defer qs.Close()
+
+	res := qs.Extract(path, tree, code)
+	if len(res.Entries) != 1 {
+		t.Fatalf("want 1 entry, got %+v", res.Entries)
+	}
+	if got := res.Entries[0].Handler.Name; got != "ListOrders" {
+		t.Errorf("handler = %q, want ListOrders", got)
+	}
+}
+
+func TestConsumerLoopNotBusinessLoop(t *testing.T) {
+	src := `package sample
+
+import "context"
+
+func (c *Consumer) Consume(ctx context.Context) {
+	for {
+		msg, err := c.reader.FetchMessage(ctx)
+		if err != nil {
+			return
+		}
+		c.repo.Save(msg)
+	}
+}
+`
+	path, tree, code := parseSample(t, src)
+	defer tree.Close()
+
+	qs := mustQuerySet(t, []string{"go/gorm.scm"})
+	defer qs.Close()
+
+	res := qs.Extract(path, tree, code)
+	var save *CallNode
+	for i := range res.Calls {
+		if strings.HasSuffix(res.Calls[i].Callee.Name, "Save") {
+			save = &res.Calls[i]
+		}
+	}
+	if save == nil {
+		t.Fatalf("Save call not extracted: %+v", res.Calls)
+	}
+	if save.InLoop {
+		t.Errorf("consumer loop should not mark Save as InLoop")
 	}
 }
 

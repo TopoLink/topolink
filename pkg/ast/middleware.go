@@ -1,6 +1,9 @@
 package ast
 
 import (
+	"path"
+	"strings"
+
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
@@ -17,6 +20,7 @@ type groupInfo struct {
 	parent string
 	file   string
 	line   int
+	prefix string
 }
 
 // ResolveMiddleware 跨文件汇总路由状态并解析每个 HTTP 入口的中间件。
@@ -41,8 +45,55 @@ func ResolveMiddleware(results []Result) {
 				continue
 			}
 			e.Middleware = resolveMiddleware(*e, uses, groups)
+
+			// 拼接分组前缀，得到真实路径与唯一入口 ID
+			// （如 /api/v1/orders，而不是 /orders）。
+			if full := routePath(*e, groups); full != e.Name {
+				method := httpMethod(e.ID)
+				e.Name = full
+				e.ID = "http:" + method + ":" + full
+			}
 		}
 	}
+}
+
+// routePath 沿接收者链拼接 Group 前缀。
+func routePath(e EntryNode, groups map[string]groupInfo) string {
+	var parts []string
+	recv := e.Receiver
+	visited := map[string]bool{}
+	for recv != "" && !visited[recv] {
+		visited[recv] = true
+		g, ok := groups[recv]
+		if !ok {
+			break
+		}
+		if g.prefix != "" {
+			parts = append(parts, g.prefix)
+		}
+		recv = g.parent
+	}
+	if len(parts) == 0 {
+		return e.Name
+	}
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
+	}
+	parts = append(parts, e.Name)
+	full := path.Join(parts...)
+	if !strings.HasPrefix(full, "/") {
+		full = "/" + full
+	}
+	return full
+}
+
+// httpMethod 从 "http:GET:/path" 中取出 GET。
+func httpMethod(id string) string {
+	s := strings.TrimPrefix(id, "http:")
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		return s[:i]
+	}
+	return ""
 }
 
 func collectRouterState(tree *sitter.Tree, src []byte, path string) ([]useCall, map[string]groupInfo) {
@@ -83,10 +134,15 @@ func collectRouterState(tree *sitter.Tree, src []byte, path string) ([]useCall, 
 						field := fn.ChildByFieldName("field")
 						operand := fn.ChildByFieldName("operand")
 						if field != nil && operand != nil && (field.Utf8Text(src) == "Group" || field.Utf8Text(src) == "GroupFunc") {
+							prefix := ""
+							if args := call.ChildByFieldName("arguments"); args != nil {
+								prefix = firstStringArg(args, src)
+							}
 							groups[left.NamedChild(0).Utf8Text(src)] = groupInfo{
 								parent: operand.Utf8Text(src),
 								file:   path,
 								line:   int(n.StartPosition().Row) + 1,
+								prefix: prefix,
 							}
 						}
 					}

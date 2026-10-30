@@ -280,7 +280,7 @@ func BuildUnits(entries []ast.EntryNode, funcs []ast.FuncSummary, ops []ast.DBOp
 	}
 	for _, e := range entries {
 		for _, mw := range e.Middleware {
-			name := ast.LastSegment(strings.TrimSuffix(strings.TrimSpace(mw), "()"))
+			name := ast.MiddlewareName(mw)
 			addFunc(name)
 		}
 	}
@@ -315,7 +315,7 @@ func BuildUnits(entries []ast.EntryNode, funcs []ast.FuncSummary, ops []ast.DBOp
 	// 中间件
 	for _, e := range entries {
 		for _, mw := range e.Middleware {
-			name := strings.TrimSuffix(strings.TrimSpace(mw), "()")
+			name := ast.MiddlewareName(mw)
 			name = ast.LastSegment(name)
 			id := "middleware:" + name
 			if seen[id] {

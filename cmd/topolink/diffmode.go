@@ -165,7 +165,7 @@ func impactMarkdown(rep diffReport) string {
 			header := "- `" + id + "`\n"
 			var lines []string
 			for _, mw := range e.Middleware {
-				name := ast.LastSegment(strings.TrimSuffix(strings.TrimSpace(mw), "()"))
+				name := ast.MiddlewareName(mw)
 				a, ok := rep.annotations["middleware:"+name]
 				if !ok || a.Text == "" {
 					continue

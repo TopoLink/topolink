@@ -150,7 +150,7 @@ func (e *Engine) Run(ctx context.Context, idx *index.Index) ([]Finding, error) {
 		// R11 auth middleware that does not actually block (annotation effects show no abort/deny)
 		if entry.Kind == ast.EntryHTTP {
 			for _, mw := range entry.Middleware {
-				name := ast.LastSegment(strings.TrimSuffix(strings.TrimSpace(mw), "()"))
+				name := ast.MiddlewareName(mw)
 				if !isAuthMw(mw, name, e.annotations) {
 					continue
 				}
@@ -297,7 +297,7 @@ func hasAuthMiddleware(mws []string, anns map[string]semantic.Annotation) bool {
 		if isAuthName(mw) {
 			return true
 		}
-		name := ast.LastSegment(strings.TrimSuffix(strings.TrimSpace(mw), "()"))
+		name := ast.MiddlewareName(mw)
 		if a, ok := anns["middleware:"+name]; ok && isAuthText(a.Text) {
 			return true
 		}

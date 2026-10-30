@@ -66,7 +66,7 @@ func collectCalls(n *sitter.Node, src []byte, caller Symbol, fctx funcContext, c
 	if n.Kind() == "call_expression" {
 		if c, ok := callFromNode(n, src, caller); ok {
 			c.Kind = classifyCall(c.Callee.Name)
-			c.InLoop = inLoop(n)
+			c.InLoop = inLoop(n, src)
 			c.InTx = inTransaction(n, src) || inManualTx(n, src)
 			c.UnderLock = underLockBefore(n, src)
 			c.InGoroutine = inGoroutine(n)

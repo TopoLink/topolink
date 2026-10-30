@@ -154,7 +154,7 @@ func httpEntry(c map[string][]sitter.Node, path string, src []byte) (EntryNode, 
 	}
 
 	n := argsNode.NamedChildCount()
-	handler := argsNode.NamedChild(n - 1).Utf8Text(src)
+	handler := LastSegment(argsNode.NamedChild(n - 1).Utf8Text(src))
 
 	var middleware []string
 	for i := uint(1); i < n-1; i++ {
@@ -263,7 +263,7 @@ func dbOp(c map[string][]sitter.Node, path string, src []byte) (DBOp, bool) {
 		Resource:   table,
 		Where:      where,
 		Caller:     enclosingFunc(callNode, src),
-		InLoop:     inLoop(callNode),
+		InLoop:     inLoop(callNode, src),
 		InTx:       inTransaction(callNode, src) || inManualTx(callNode, src),
 		UnderLock:  underLockBefore(callNode, src),
 		Standalone: isStandalone(callNode),
@@ -348,13 +348,46 @@ func enclosingFunc(n *sitter.Node, src []byte) Symbol {
 }
 
 // inLoop 判断节点是否处于 for / range 循环体内。
-func inLoop(n *sitter.Node) bool {
+func inLoop(n *sitter.Node, src []byte) bool {
 	for p := n.Parent(); p != nil; p = p.Parent() {
-		if p.Kind() == "for_statement" {
-			return true
+		if p.Kind() != "for_statement" {
+			continue
 		}
+		// 事件消费循环（FetchMessage/ReadMessage/Poll/Messages）每次迭代是
+		// 一条独立消息，不应按"循环内查库/写库"处理。
+		if isConsumerLoop(p, src) {
+			continue
+		}
+		return true
 	}
 	return false
+}
+
+// isConsumerLoop 判断 for 节点是否为事件消费循环。
+func isConsumerLoop(forNode *sitter.Node, src []byte) bool {
+	found := false
+	var walk func(*sitter.Node)
+	walk = func(n *sitter.Node) {
+		if found {
+			return
+		}
+		if n.Kind() == "call_expression" {
+			if fn := n.ChildByFieldName("function"); fn != nil {
+				l := strings.ToLower(fn.Utf8Text(src))
+				if strings.Contains(l, "fetchmessage") || strings.Contains(l, "readmessage") ||
+					strings.Contains(l, "poll") || strings.HasSuffix(l, ".messages") ||
+					strings.HasSuffix(l, ".consume") {
+					found = true
+					return
+				}
+			}
+		}
+		for i := uint(0); i < n.NamedChildCount(); i++ {
+			walk(n.NamedChild(i))
+		}
+	}
+	walk(forNode)
+	return found
 }
 
 // inTransaction 判断节点是否处于 *.Transaction(func(tx){...}) 闭包内。
