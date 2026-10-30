@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a framework, rule, or integration
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the workflow or false negative you are hitting.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: A new .scm rule, a new detection, a new output mode, etc.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - New framework / .scm
+        - New rule
+        - Diff / blast radius
+        - Semantic enrichment
+        - Output / GitHub integration
+        - Other
+    validations:
+      required: true

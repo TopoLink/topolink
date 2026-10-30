@@ -1,0 +1,41 @@
+name: Bug report
+description: Something is wrong with extraction, a rule, or the Action
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. A minimal reproduction makes fixes much faster.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Include the observed output and the expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: A small Go snippet, a repo layout, or the exact command.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Topolink version / commit
+      placeholder: v0.1.0 or a commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did it happen?
+      options:
+        - CLI
+        - GitHub Action
+        - Docker
+        - Library / Go API
+    validations:
+      required: true
