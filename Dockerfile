@@ -1,15 +1,17 @@
-# Topolink — 纯 Go、无 cgo，多阶段构建
+# Topolink — multi-stage build.
+# tree-sitter grammars are C code, so the build stage needs cgo + a C toolchain.
 FROM golang:1.23-alpine AS build
+RUN apk add --no-cache build-base
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /topolink ./cmd/topolink
+RUN CGO_ENABLED=1 go build -o /topolink ./cmd/topolink
 
 FROM alpine:3.19
-# git 用于 diff 驱动的爆炸半径模式；ca-certificates 用于调用 LLM HTTPS
+# git for diff mode; ca-certificates for LLM HTTPS
 RUN apk add --no-cache git ca-certificates
-# 允许在挂载的 workspace 上执行 git（避免 dubious ownership）
+# allow git to operate on the mounted workspace (avoids dubious ownership)
 RUN git config --system --add safe.directory '*'
 COPY --from=build /topolink /usr/local/bin/topolink
 ENTRYPOINT ["topolink"]
