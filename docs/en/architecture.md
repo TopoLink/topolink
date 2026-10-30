@@ -47,7 +47,7 @@
 ```
 topolink/
 ├── action.yml                  # GitHub Action definition
-├── Dockerfile                  # Pure-Go tree-sitter, no cgo
+├── Dockerfile                  # Multi-stage build (cgo for tree-sitter grammars)
 ├── go.mod / go.sum
 ├── docs/                       # Strategy & design docs
 │   ├── 03-技术架构与目录规范.md
@@ -192,9 +192,11 @@ Annotations are cached by a SHA-256 **content fingerprint** (`kind + id + source
 
 ## 5. Key Engineering Decisions
 
-### 5.1 No cgo
-- `smacker/go-tree-sitter` requires CGo and complicates Docker/cross-compilation.
-- We use the pure-Go binding `github.com/tree-sitter/go-tree-sitter`, so the Dockerfile is a simple multi-stage build with no C toolchain.
+### 5.1 cgo is required for tree-sitter (build time only)
+
+- tree-sitter grammars are C code; the Go binding (`github.com/tree-sitter/go-tree-sitter`) is a thin wrapper, so **cgo is required at build time**.
+- The Docker build stage installs `build-base` and compiles with `CGO_ENABLED=1`; the runtime stage stays a small Alpine image (`git` + `ca-certificates`).
+- Local builds need a C toolchain (`gcc`/`clang`); `ubuntu-latest` in CI already has one.
 
 ### 5.2 Dependencies
 - `gopkg.in/yaml.v3` (policy file)
