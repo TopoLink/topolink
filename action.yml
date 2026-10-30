@@ -1,0 +1,42 @@
+name: 'Topolink — Code Blast Radius Firewall'
+description: 'Diff-driven code impact analysis: trace the blast radius of a PR with deterministic AST topology'
+branding:
+  icon: 'shield'
+  color: 'blue'
+inputs:
+  repo-path:
+    description: 'Path to the repository root to analyze'
+    required: false
+    default: '.'
+  fail-on:
+    description: 'Fail the action at this severity or above: none | critical | high | medium (aliases: s0, s1, s2)'
+    required: false
+    default: 'critical'
+  diff:
+    description: 'Blast-radius mode: auto (PR diff), a git range, or empty for a full scan'
+    required: false
+    default: 'auto'
+  semantic-index:
+    description: 'Path to the semantic index cache. Set OPENAI_API_KEY to enable AI enrichment; cache this file to avoid re-annotating.'
+    required: false
+    default: '.topolink/semantic.json'
+  config:
+    description: 'Path to the policy file (rule toggles, ignore paths, public paths, table keywords).'
+    required: false
+    default: '.pr-risk.yml'
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  args:
+    - '-repo'
+    - ${{ inputs.repo-path }}
+    - '-format'
+    - 'github'
+    - '-fail-on'
+    - ${{ inputs.fail-on }}
+    - '-diff'
+    - ${{ inputs.diff }}
+    - '-semantic'
+    - ${{ inputs.semantic-index }}
+    - '-config'
+    - ${{ inputs.config }}

@@ -1,0 +1,18 @@
+# build artifacts
+/action
+/topolink
+*.exe
+*.db
+*.graph.db
+
+# test / coverage
+*.out
+coverage.txt
+
+# local semantic index / runtime cache
+.topolink/
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
