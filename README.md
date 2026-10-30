@@ -265,9 +265,10 @@ No network calls, no telemetry, and **no source code leaves the runner**.
 Topolink is an honest, deterministic first pass — not a soundness-complete prover:
 
 - **Go only** (for now).
-- Symbol resolution is **name-based**; same-named methods on different types may be merged.
+- Symbol resolution is **receiver-aware** for common cases (method receivers, parameters, composite literals, `NewX()` / `GetX()` constructors). When the receiver type cannot be inferred, it falls back to name matching, so unusual assignments may still merge same-named methods.
 - **R6 / R7 are heuristics** (statement-level / function-level).
-- No type inference; raw-SQL table names aren't parsed from `FROM` clauses yet.
+- Dynamic route paths (for example a path held in a variable) cannot be resolved to a concrete URL.
+- GORM `Model(instance)` / `Save` are treated as implicit primary-key `WHERE`; zero-value `Model(&Type{})` is still treated as a potential full-table write.
 
 ## Roadmap
 

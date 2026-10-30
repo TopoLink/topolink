@@ -80,14 +80,15 @@ const (
 
 // EntryNode 一个业务入口（系统对外暴露或被动触发的执行起点）。
 type EntryNode struct {
-	ID         string // 稳定 ID，如 "http:GET:/api/orders"
-	Kind       EntryKind
-	Name       string   // 入口名称（路径 / method / topic / job name）
-	Handler    Symbol   // 处理函数
-	Receiver   string   // HTTP 路由注册的接收者（如 gin 的 r、group 变量）
-	Middleware []string // 入口挂载的中间件（内联 + .Use 继承）
-	SourceLoc  Loc      // 源码位置
-	PodHints   []string // Phase 2: 运行单元归属线索
+	ID            string // 稳定 ID，如 "http:GET:/api/orders"
+	Kind          EntryKind
+	Name          string   // 入口名称（路径 / method / topic / job name）
+	Handler       Symbol   // 处理函数
+	Receiver      string   // HTTP 路由注册的接收者（如 gin 的 r、group 变量）
+	EnclosingFunc string   // 注册路由的函数（用于解析函数参数形式的路由组）
+	Middleware    []string // 入口挂载的中间件（内联 + .Use 继承）
+	SourceLoc     Loc      // 源码位置
+	PodHints      []string // Phase 2: 运行单元归属线索
 }
 
 // CallKind 调用类型。
@@ -122,6 +123,10 @@ type CallNode struct {
 	// 附加分析信号
 	Standalone bool // 是否为独立表达式语句（R6：写操作返回值未检查）
 	NoTimeout  bool // 所属函数未发现超时设置（R7：远程调用无超时）
+
+	// Qualified 表示这是包级调用（common.Bind、http.Get），解析时只匹配
+	// 顶层同名函数，不应回退到同名方法。
+	Qualified bool
 
 	// CallbackOf 记录"该调用位于哪个包装调用的闭包内"（由内到外的包装被调名）。
 	// 例如 withLock(func(){ withTx(func(){ http.Get() }) }) 中，http.Get 的
@@ -159,19 +164,21 @@ const (
 
 // DBOp 下游数据库/存储操作（"下游操作分析"核心）。
 type DBOp struct {
-	EntryID     string // 归属入口
-	Caller      Symbol // 所属函数（用于把 op 关联到入口）
-	Op          OpKind
-	Method      string   // 原始方法名（如 Create / Update / Delete）
-	Resource    string   // 表名 / key 模式
-	Fields      []string // 涉及字段
-	Where       string   // WHERE 条件近似（或近似 SQL）
-	InLoop      bool     // 是否在循环内（R1/R2）
-	InTx        bool     // 是否在事务内（R3）
-	UnderLock   bool     // 是否持锁调用（R4）
-	InGoroutine bool     // 是否在协程内
-	Standalone  bool     // 是否为独立语句（R6：写返回值未检查）
-	Loc         Loc
+	EntryID       string // 归属入口
+	Caller        Symbol // 所属函数（用于把 op 关联到入口）
+	Op            OpKind
+	Method        string   // 原始方法名（如 Create / Update / Delete）
+	Resource      string   // 表名 / key 模式
+	Fields        []string // 涉及字段
+	Where         string   // WHERE 条件近似（或近似 SQL）
+	HasWhere      bool     // 是否存在 WHERE（非字面量也算）
+	ImplicitWhere bool     // 是否由 GORM 主键隐式限定（Model(实例) / Save）
+	InLoop        bool     // 是否在循环内（R1/R2）
+	InTx          bool     // 是否在事务内（R3）
+	UnderLock     bool     // 是否持锁调用（R4）
+	InGoroutine   bool     // 是否在协程内
+	Standalone    bool     // 是否为独立语句（R6：写返回值未检查）
+	Loc           Loc
 }
 
 // ResourceKind 反查索引的资源类型。

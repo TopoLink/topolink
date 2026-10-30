@@ -78,9 +78,62 @@ func ctxFromOp(op ast.DBOp) execCtx {
 // 仅对普通函数/方法调用做 last-segment 归一（外部 HTTP/gRPC/MQ/Lock 调用不归一，避免误连）。
 func resolveCallee(call ast.CallNode) ast.Symbol {
 	if call.Kind == ast.CallFunc {
-		return ast.Symbol{Name: ast.LastSegment(call.Callee.Name)}
+		name := ast.LastSegment(call.Callee.Name)
+		if call.Callee.Package != "" {
+			return ast.Symbol{Package: call.Callee.Package, Name: name}
+		}
+		return ast.Symbol{Name: name}
 	}
 	return call.Callee
+}
+
+// forwardTargetsExact 只匹配精确键或顶层同名函数（包级调用）。
+func forwardTargetsExact(forward index.ForwardIndex, s ast.Symbol) []ast.Symbol {
+	if _, ok := forward[s]; ok {
+		return []ast.Symbol{s}
+	}
+	bare := ast.Symbol{Name: s.Name}
+	if _, ok := forward[bare]; ok {
+		return []ast.Symbol{bare}
+	}
+	return []ast.Symbol{s}
+}
+
+// forwardTargets 把调用目标展开为正向索引里的候选符号。
+// 优先精确匹配（含接收者类型），其次裸名，最后按方法名兜底。
+func forwardTargets(forward index.ForwardIndex, s ast.Symbol) []ast.Symbol {
+	var out []ast.Symbol
+	if s.Package != "" {
+		if _, ok := forward[s]; ok {
+			return []ast.Symbol{s}
+		}
+		// 已知接收者类型但精确方法没有出边：只有同名方法唯一时才回退
+		// （例如嵌入字段提升的 isFavoriteBy），否则只认精确类型，
+		// 避免 TagSerializer.Response 被误当成 ArticlesSerializer.Response。
+		var matches []ast.Symbol
+		for k := range forward {
+			if k.Name == s.Name {
+				matches = append(matches, k)
+			}
+		}
+		if len(matches) == 1 {
+			return matches
+		}
+		return []ast.Symbol{s}
+	} else {
+		if _, ok := forward[s]; ok {
+			out = append(out, s)
+		}
+		for k := range forward {
+			if k.Name == s.Name && k.Package != "" {
+				out = append(out, k)
+			}
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, s)
+	}
+	return out
 }
 
 // wrapperInfo 描述一个"高阶包装函数"建立的上下文。
@@ -212,6 +265,16 @@ func effectiveContexts(start ast.Symbol, forward index.ForwardIndex) map[ast.Sym
 	reached := map[ast.Symbol]bool{start: true}
 	queue := []ast.Symbol{start}
 
+	// 入口 handler 可能是方法（h.ListOrders），其索引键带接收者类型；
+	// 先按名字找到候选起点。
+	for _, s := range forwardTargets(forward, start) {
+		if !reached[s] {
+			reached[s] = true
+			eff[s] = execCtx{}
+			queue = append(queue, s)
+		}
+	}
+
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
@@ -219,18 +282,23 @@ func effectiveContexts(start ast.Symbol, forward index.ForwardIndex) map[ast.Sym
 
 		for _, call := range forward[cur] {
 			edge := curCtx.merge(ctxFromCall(call))
-			next := resolveCallee(call)
-			existing := eff[next]
-			merged := existing.merge(edge)
+			targets := forwardTargets(forward, resolveCallee(call))
+			if call.Qualified {
+				targets = forwardTargetsExact(forward, resolveCallee(call))
+			}
+			for _, next := range targets {
+				existing := eff[next]
+				merged := existing.merge(edge)
 
-			if !reached[next] {
-				reached[next] = true
-				eff[next] = merged
-				queue = append(queue, next)
-			} else if merged != existing {
-				// 上下文单调增长，必然收敛
-				eff[next] = merged
-				queue = append(queue, next)
+				if !reached[next] {
+					reached[next] = true
+					eff[next] = merged
+					queue = append(queue, next)
+				} else if merged != existing {
+					// 上下文单调增长，必然收敛
+					eff[next] = merged
+					queue = append(queue, next)
+				}
 			}
 		}
 	}

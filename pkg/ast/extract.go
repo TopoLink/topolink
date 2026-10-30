@@ -16,7 +16,134 @@ func symbolFromDecl(n *sitter.Node, src []byte) Symbol {
 	if name := n.ChildByFieldName("name"); name != nil {
 		sym.Name = name.Utf8Text(src)
 	}
+	// 方法的 Package 记录接收者类型，使 ArticleSerializer.Response 与
+	// ArticlesSerializer.Response 不再按裸方法名合并。
+	if n.Kind() == "method_declaration" {
+		sym.Package = receiverType(n, src)
+	}
 	return sym
+}
+
+// receiverType 从方法声明的 receiver 中提取类型名（去掉指针与包前缀）。
+func receiverType(n *sitter.Node, src []byte) string {
+	recv := n.ChildByFieldName("receiver")
+	if recv == nil {
+		return ""
+	}
+	for i := uint(0); i < recv.NamedChildCount(); i++ {
+		p := recv.NamedChild(i)
+		if p.Kind() != "parameter_declaration" {
+			continue
+		}
+		if typ := p.ChildByFieldName("type"); typ != nil {
+			return baseType(typ.Utf8Text(src))
+		}
+	}
+	return ""
+}
+
+// baseType 归一化类型文本：*pkg.Type -> Type。
+func baseType(t string) string {
+	t = strings.TrimSpace(t)
+	t = strings.TrimPrefix(t, "*")
+	t = strings.TrimPrefix(t, "[]")
+	if i := strings.LastIndexByte(t, '.'); i >= 0 {
+		t = t[i+1:]
+	}
+	return t
+}
+
+// buildTypeEnv 粗略推断函数内变量/参数的类型，用于把方法调用解析到正确的接收者类型。
+// 只处理高置信度场景：receiver、参数、复合字面量、new(Type)、var x Type。
+func buildTypeEnv(n *sitter.Node, src []byte) map[string]string {
+	env := map[string]string{}
+
+	addParams := func(list *sitter.Node) {
+		if list == nil {
+			return
+		}
+		for i := uint(0); i < list.NamedChildCount(); i++ {
+			p := list.NamedChild(i)
+			if p.Kind() != "parameter_declaration" {
+				continue
+			}
+			name := p.ChildByFieldName("name")
+			typ := p.ChildByFieldName("type")
+			if name != nil && typ != nil {
+				env[name.Utf8Text(src)] = baseType(typ.Utf8Text(src))
+			}
+		}
+	}
+	if n.Kind() == "method_declaration" {
+		addParams(n.ChildByFieldName("receiver"))
+	}
+	addParams(n.ChildByFieldName("parameters"))
+
+	body := n.ChildByFieldName("body")
+	if body == nil {
+		return env
+	}
+
+	var walk func(*sitter.Node)
+	walk = func(m *sitter.Node) {
+		switch m.Kind() {
+		case "short_var_declaration":
+			left := m.ChildByFieldName("left")
+			right := m.ChildByFieldName("right")
+			if left != nil && right != nil && left.NamedChildCount() > 0 && right.NamedChildCount() > 0 {
+				if typ := typeFromExpr(right.NamedChild(0), src); typ != "" {
+					env[left.NamedChild(0).Utf8Text(src)] = typ
+				}
+			}
+		case "var_spec":
+			name := m.ChildByFieldName("name")
+			typ := m.ChildByFieldName("type")
+			if name != nil && typ != nil {
+				env[name.Utf8Text(src)] = baseType(typ.Utf8Text(src))
+			}
+		}
+		for i := uint(0); i < m.NamedChildCount(); i++ {
+			walk(m.NamedChild(i))
+		}
+	}
+	walk(body)
+	return env
+}
+
+// typeFromExpr 从表达式推断类型：Type{}、&Type{}、new(Type)。
+func typeFromExpr(n *sitter.Node, src []byte) string {
+	switch n.Kind() {
+	case "composite_literal":
+		if t := n.ChildByFieldName("type"); t != nil {
+			return baseType(strings.TrimSpace(t.Utf8Text(src)))
+		}
+	case "unary_expression":
+		for i := uint(0); i < n.NamedChildCount(); i++ {
+			if c := n.NamedChild(i); c.Kind() == "composite_literal" {
+				return typeFromExpr(c, src)
+			}
+		}
+	case "call_expression":
+		fn := n.ChildByFieldName("function")
+		if fn == nil {
+			return ""
+		}
+		name := LastSegment(fn.Utf8Text(src))
+		if name == "new" {
+			if args := n.ChildByFieldName("arguments"); args != nil && args.NamedChildCount() > 0 {
+				return baseType(strings.TrimSpace(args.NamedChild(0).Utf8Text(src)))
+			}
+			return ""
+		}
+		// 常见构造器命名：NewXxx() / GetXxx()。
+		if strings.HasPrefix(name, "New") && len(name) > 3 {
+			return baseType(name[3:])
+		}
+		if strings.HasPrefix(name, "Get") && len(name) > 3 {
+			return baseType(name[3:])
+		}
+	}
+	return ""
 }
 
 // funcContext 是每个函数的分析上下文（用于 R7 等函数级信号）。
@@ -41,7 +168,8 @@ func walkCalls(tree *sitter.Tree, src []byte) ([]CallNode, []FuncSummary, []Trou
 				continue
 			}
 			fctx := funcContext{noTimeout: !hasTimeout(body, src)}
-			collectCalls(body, src, caller, fctx, nil, &calls, &troubles)
+			env := buildTypeEnv(child, src)
+			collectCalls(body, src, caller, fctx, env, nil, &calls, &troubles)
 
 			cbs := callbackParams(child.ChildByFieldName("parameters"), src)
 			uses, hasLock, hasTx := analyzeBody(body, src, toSet(cbs))
@@ -62,9 +190,9 @@ func walkCalls(tree *sitter.Tree, src []byte) ([]CallNode, []FuncSummary, []Trou
 }
 
 // collectCalls 递归提取调用。callbackOf 记录当前所在的闭包是由哪个包装调用传入的。
-func collectCalls(n *sitter.Node, src []byte, caller Symbol, fctx funcContext, callbackOf []string, calls *[]CallNode, troubles *[]Trouble) {
+func collectCalls(n *sitter.Node, src []byte, caller Symbol, fctx funcContext, env map[string]string, callbackOf []string, calls *[]CallNode, troubles *[]Trouble) {
 	if n.Kind() == "call_expression" {
-		if c, ok := callFromNode(n, src, caller); ok {
+		if c, ok := callFromNode(n, src, caller, env); ok {
 			c.Kind = classifyCall(c.Callee.Name)
 			c.InLoop = inLoop(n, src)
 			c.InTx = inTransaction(n, src) || inManualTx(n, src)
@@ -82,17 +210,17 @@ func collectCalls(n *sitter.Node, src []byte, caller Symbol, fctx funcContext, c
 		callee := ""
 		if fn := n.ChildByFieldName("function"); fn != nil {
 			callee = calleeName(fn, src)
-			collectCalls(fn, src, caller, fctx, callbackOf, calls, troubles)
+			collectCalls(fn, src, caller, fctx, env, callbackOf, calls, troubles)
 		}
 		if args := n.ChildByFieldName("arguments"); args != nil {
 			for i := uint(0); i < args.NamedChildCount(); i++ {
 				arg := args.NamedChild(i)
 				if arg.Kind() == "func_literal" {
 					if body := arg.ChildByFieldName("body"); body != nil {
-						collectCalls(body, src, caller, fctx, withCallback(callbackOf, callee), calls, troubles)
+						collectCalls(body, src, caller, fctx, env, withCallback(callbackOf, callee), calls, troubles)
 					}
 				} else {
-					collectCalls(arg, src, caller, fctx, callbackOf, calls, troubles)
+					collectCalls(arg, src, caller, fctx, env, callbackOf, calls, troubles)
 				}
 			}
 		}
@@ -100,7 +228,7 @@ func collectCalls(n *sitter.Node, src []byte, caller Symbol, fctx funcContext, c
 	}
 
 	for i := uint(0); i < n.NamedChildCount(); i++ {
-		collectCalls(n.NamedChild(i), src, caller, fctx, callbackOf, calls, troubles)
+		collectCalls(n.NamedChild(i), src, caller, fctx, env, callbackOf, calls, troubles)
 	}
 }
 
@@ -113,7 +241,7 @@ func withCallback(stack []string, callee string) []string {
 }
 
 // callFromNode 从 call_expression 提取一个调用节点。
-func callFromNode(n *sitter.Node, src []byte, caller Symbol) (CallNode, bool) {
+func callFromNode(n *sitter.Node, src []byte, caller Symbol, env map[string]string) (CallNode, bool) {
 	fn := n.ChildByFieldName("function")
 	if fn == nil {
 		return CallNode{}, false
@@ -123,13 +251,32 @@ func callFromNode(n *sitter.Node, src []byte, caller Symbol) (CallNode, bool) {
 		return CallNode{}, false
 	}
 	p := n.StartPosition()
+	callee := Symbol{Name: name}
+	qualified := false
+	if fn.Kind() == "selector_expression" {
+		if op := fn.ChildByFieldName("operand"); op != nil && op.Kind() == "identifier" {
+			operand := op.Utf8Text(src)
+			if typ := env[operand]; typ != "" {
+				callee.Package = typ
+			} else if isLowerPackage(operand) {
+				// common.Bind / http.Get / users.Register：包级调用
+				qualified = true
+			}
+		}
+	}
 	return CallNode{
-		Caller: caller,
-		Callee: Symbol{Name: name},
-		Kind:   CallFunc,
-		Loc:    Loc{Line: int(p.Row) + 1, Column: int(p.Column) + 1},
-		Args:   argTexts(n, src),
+		Caller:    caller,
+		Callee:    callee,
+		Kind:      CallFunc,
+		Loc:       Loc{Line: int(p.Row) + 1, Column: int(p.Column) + 1},
+		Args:      argTexts(n, src),
+		Qualified: qualified,
 	}, true
+}
+
+// isLowerPackage 粗略判断标识符是否为包名（包名约定全小写）。
+func isLowerPackage(s string) bool {
+	return s != "" && s == strings.ToLower(s)
 }
 
 // calleeName 提取被调符号名：db.Where -> "db.Where"，queryOrders -> "queryOrders"。

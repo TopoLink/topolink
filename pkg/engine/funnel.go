@@ -15,7 +15,8 @@ func evaluateDBRules(entryID string, op ast.DBOp, c execCtx, anns map[string]sem
 	isWrite := op.Op == ast.OpWrite || op.Op == ast.OpDelete
 
 	// R5 UPDATE/DELETE without WHERE (fatal; Create/Save are inserts and need no WHERE)
-	if (op.Method == "Update" || op.Method == "Updates" || op.Method == "Delete") && op.Where == "" {
+	hasWhere := op.HasWhere || op.Where != ""
+	if (op.Method == "Update" || op.Method == "Updates" || op.Method == "Delete") && !hasWhere && !op.ImplicitWhere {
 		out = append(out, Finding{
 			Rule:       "R5",
 			Level:      llm.RiskFatal,

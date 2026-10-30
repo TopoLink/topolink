@@ -24,8 +24,10 @@ type Result struct {
 	Troubles []Trouble
 
 	// 路由状态（供 ResolveMiddleware 跨文件汇总）
-	uses   []useCall
-	groups map[string]groupInfo
+	uses         []useCall
+	groups       map[string]groupInfo
+	routerParams map[string]string
+	groupCalls   []groupCall
 }
 
 // QuerySet 是加载好的一组 tree-sitter 查询规则（按生态）。
@@ -112,16 +114,18 @@ func (qs *QuerySet) Extract(path string, tree *sitter.Tree, src []byte) Result {
 		funcs[i].File = path
 	}
 
-	applyUses, applyGroups := collectRouterState(tree, src, path)
+	applyUses, applyGroups, routerParams, groupCalls := collectRouterState(tree, src, path)
 
 	return Result{
-		Entries:  entries,
-		Calls:    calls,
-		Ops:      ops,
-		Funcs:    funcs,
-		Troubles: troubles,
-		uses:     applyUses,
-		groups:   applyGroups,
+		Entries:      entries,
+		Calls:        calls,
+		Ops:          ops,
+		Funcs:        funcs,
+		Troubles:     troubles,
+		uses:         applyUses,
+		groups:       applyGroups,
+		routerParams: routerParams,
+		groupCalls:   groupCalls,
 	}
 }
 
@@ -173,13 +177,14 @@ func httpEntry(c map[string][]sitter.Node, path string, src []byte) (EntryNode, 
 	pos := methodNode.StartPosition()
 
 	return EntryNode{
-		ID:         fmt.Sprintf("http:%s:%s", method, p),
-		Kind:       EntryHTTP,
-		Name:       p,
-		Handler:    Symbol{Name: handler},
-		Receiver:   receiver,
-		Middleware: middleware,
-		SourceLoc:  Loc{File: path, Line: int(pos.Row) + 1, Column: int(pos.Column) + 1},
+		ID:            fmt.Sprintf("http:%s:%s", method, p),
+		Kind:          EntryHTTP,
+		Name:          p,
+		Handler:       Symbol{Name: handler},
+		Receiver:      receiver,
+		EnclosingFunc: enclosingFunc(methodNode, src).Name,
+		Middleware:    middleware,
+		SourceLoc:     Loc{File: path, Line: int(pos.Row) + 1, Column: int(pos.Column) + 1},
 	}, true
 }
 
@@ -242,6 +247,11 @@ func dbOp(c map[string][]sitter.Node, path string, src []byte) (DBOp, bool) {
 	if methodNode == nil || callNode == nil {
 		return DBOp{}, false
 	}
+	// gorm 的 .scm 会匹配任意 .Update/.Create 选择器；这里用接收者名过滤掉
+	// 领域方法（articleModel.Update(...)），只保留 db/tx/gorm 等数据库句柄。
+	if !looksLikeDBReceiver(callNode, src) {
+		return DBOp{}, false
+	}
 
 	op, ok := gormTerminal[methodNode.Utf8Text(src)]
 	if !ok {
@@ -249,40 +259,66 @@ func dbOp(c map[string][]sitter.Node, path string, src []byte) (DBOp, bool) {
 	}
 	method := methodNode.Utf8Text(src)
 
-	table, where := chainInfo(callNode, src)
+	table, where, hasWhere, implicitWhere := chainInfo(callNode, src)
 
 	// 原生 SQL：Raw/Exec 的动作类型、WHERE 与表名从 SQL 文本推断
 	if method == "Raw" || method == "Exec" {
-		op, method, where, table = classifySQL(callNode, src)
+		op, method, where, hasWhere, table = classifySQL(callNode, src)
+		implicitWhere = false
+	}
+	if method == "Save" {
+		implicitWhere = true
 	}
 
 	pos := callNode.StartPosition()
 	return DBOp{
-		Op:         op,
-		Method:     method,
-		Resource:   table,
-		Where:      where,
-		Caller:     enclosingFunc(callNode, src),
-		InLoop:     inLoop(callNode, src),
-		InTx:       inTransaction(callNode, src) || inManualTx(callNode, src),
-		UnderLock:  underLockBefore(callNode, src),
-		Standalone: isStandalone(callNode),
-		Loc:        Loc{File: path, Line: int(pos.Row) + 1, Column: int(pos.Column) + 1},
+		Op:            op,
+		Method:        method,
+		Resource:      table,
+		Where:         where,
+		HasWhere:      hasWhere,
+		ImplicitWhere: implicitWhere,
+		Caller:        enclosingFunc(callNode, src),
+		InLoop:        inLoop(callNode, src),
+		InTx:          inTransaction(callNode, src) || inManualTx(callNode, src),
+		UnderLock:     underLockBefore(callNode, src),
+		Standalone:    isStandalone(callNode),
+		Loc:           Loc{File: path, Line: int(pos.Row) + 1, Column: int(pos.Column) + 1},
 	}, true
 }
 
 // sqlTableNameRe 从 SQL 文本提取表名（FROM / JOIN / INTO / UPDATE 后的标识符）。
 var sqlTableNameRe = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+([a-zA-Z_][\w]*)`)
 
+// looksLikeDBReceiver 判断调用接收者是否像 GORM 句柄（db/tx/gorm/conn/session）。
+// 用于过滤 articleModel.Update(...) 这类与 GORM 方法同名的领域方法。
+func looksLikeDBReceiver(call *sitter.Node, src []byte) bool {
+	fn := call.ChildByFieldName("function")
+	if fn == nil || fn.Kind() != "selector_expression" {
+		return true
+	}
+	operand := fn.ChildByFieldName("operand")
+	if operand == nil {
+		return true
+	}
+	recv := strings.ToLower(operand.Utf8Text(src))
+	for _, k := range []string{"db", "tx", "gorm", "conn", "session", "database"} {
+		if strings.Contains(recv, k) {
+			return true
+		}
+	}
+	return false
+}
+
 // classifySQL 从 Raw/Exec 的 SQL 文本推断操作类型、方法名、WHERE 与表名。
-func classifySQL(call *sitter.Node, src []byte) (OpKind, string, string, string) {
+func classifySQL(call *sitter.Node, src []byte) (OpKind, string, string, bool, string) {
 	args := call.ChildByFieldName("arguments")
 	if args == nil {
-		return OpRead, "Select", "", ""
+		return OpRead, "Select", "", false, ""
 	}
 	s, ok := stringLiteral(args.NamedChild(0), src)
 	if !ok {
-		return OpRead, "Select", "", ""
+		return OpRead, "Select", "", false, ""
 	}
 
 	table := ""
@@ -291,24 +327,26 @@ func classifySQL(call *sitter.Node, src []byte) (OpKind, string, string, string)
 	}
 
 	u := strings.ToUpper(strings.TrimSpace(s))
+	hasWhere := strings.Contains(u, "WHERE")
 	where := ""
-	if strings.Contains(u, "WHERE") {
+	if hasWhere {
 		where = "raw"
 	}
 	switch {
 	case strings.HasPrefix(u, "DELETE"):
-		return OpDelete, "Delete", where, table
+		return OpDelete, "Delete", where, hasWhere, table
 	case strings.HasPrefix(u, "UPDATE"):
-		return OpWrite, "Update", where, table
+		return OpWrite, "Update", where, hasWhere, table
 	case strings.HasPrefix(u, "INSERT"), strings.HasPrefix(u, "REPLACE"):
-		return OpWrite, "Create", where, table
+		return OpWrite, "Create", where, hasWhere, table
 	default:
-		return OpRead, "Select", where, table
+		return OpRead, "Select", where, hasWhere, table
 	}
 }
 
-// chainInfo 沿 gorm 链式调用向下，提取表名（Table）与 WHERE 条件（Where）。
-func chainInfo(call *sitter.Node, src []byte) (table, where string) {
+// chainInfo 沿 gorm 链式调用向下，提取表名（Table）、WHERE（Where）
+// 以及 GORM 的隐式主键限定（Model(实例) / Save）。
+func chainInfo(call *sitter.Node, src []byte) (table, where string, hasWhere, implicitWhere bool) {
 	for node := call; node != nil; {
 		fn := node.ChildByFieldName("function")
 		if fn == nil || fn.Kind() != "selector_expression" {
@@ -323,8 +361,15 @@ func chainInfo(call *sitter.Node, src []byte) (table, where string) {
 					table = firstStringArg(args, src)
 				}
 			case "Where":
+				// 非字面量条件（Where(condition)）也算存在 WHERE，
+				// 只是无法提取出可读的条件文本。
+				hasWhere = true
 				if args := node.ChildByFieldName("arguments"); args != nil && where == "" {
 					where = firstStringArg(args, src)
+				}
+			case "Model":
+				if args := node.ChildByFieldName("arguments"); args != nil {
+					implicitWhere = modelImpliesPK(args)
 				}
 			}
 		}
@@ -333,7 +378,40 @@ func chainInfo(call *sitter.Node, src []byte) (table, where string) {
 		}
 		node = operand
 	}
-	return table, where
+	return table, where, hasWhere, implicitWhere
+}
+
+// modelImpliesPK 判断 GORM Model(...) 的参数是否带主键。
+// Model(model) / Model(&model) / Model(&Type{ID: ...}) → true；
+// Model(&Type{}) → false（零值主键，可能全表更新）。
+func modelImpliesPK(args *sitter.Node) bool {
+	if args == nil || args.NamedChildCount() == 0 {
+		return false
+	}
+	return exprImpliesPK(args.NamedChild(0))
+}
+
+func exprImpliesPK(n *sitter.Node) bool {
+	switch n.Kind() {
+	case "unary_expression":
+		for i := uint(0); i < n.NamedChildCount(); i++ {
+			child := n.NamedChild(i)
+			if child.Kind() == "composite_literal" {
+				return compositeHasFields(child)
+			}
+		}
+		return true
+	case "composite_literal":
+		return compositeHasFields(n)
+	default:
+		// identifier / selector / call：视为已有主键的实例
+		return true
+	}
+}
+
+func compositeHasFields(lit *sitter.Node) bool {
+	body := lit.ChildByFieldName("body")
+	return body != nil && body.NamedChildCount() > 0
 }
 
 // enclosingFunc 向上查找最近的函数/方法声明，返回其符号。

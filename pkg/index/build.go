@@ -84,10 +84,16 @@ func dedupEntries(entries []ast.EntryNode) []ast.EntryNode {
 }
 
 // reachableFuncs 从起点函数沿正向调用链 BFS，返回所有可达函数符号（含自身）。
-// 对普通调用做 last-segment 归一，使方法调用（service.GetUser）能接上定义（GetUser）。
+// 方法调用优先按接收者类型匹配，类型未知时回退到方法名。
 func reachableFuncs(start ast.Symbol, forward ForwardIndex) []ast.Symbol {
 	seen := map[ast.Symbol]bool{start: true}
 	queue := []ast.Symbol{start}
+	for _, s := range indexTargets(forward, start) {
+		if !seen[s] {
+			seen[s] = true
+			queue = append(queue, s)
+		}
+	}
 
 	var out []ast.Symbol
 	for len(queue) > 0 {
@@ -96,15 +102,75 @@ func reachableFuncs(start ast.Symbol, forward ForwardIndex) []ast.Symbol {
 		out = append(out, cur)
 
 		for _, c := range forward[cur] {
-			next := c.Callee
-			if c.Kind == ast.CallFunc {
-				next = ast.Symbol{Name: ast.LastSegment(c.Callee.Name)}
+			if c.Kind != ast.CallFunc {
+				continue
 			}
-			if !seen[next] {
-				seen[next] = true
-				queue = append(queue, next)
+			next := ast.Symbol{Name: ast.LastSegment(c.Callee.Name)}
+			if c.Callee.Package != "" {
+				next.Package = c.Callee.Package
+			}
+			targets := indexTargets(forward, next)
+			if c.Qualified {
+				targets = indexTargetsExact(forward, next)
+			}
+			for _, t := range targets {
+				if !seen[t] {
+					seen[t] = true
+					queue = append(queue, t)
+				}
 			}
 		}
+	}
+	return out
+}
+
+// indexTargetsExact 只匹配精确键或顶层同名函数（包级调用）。
+func indexTargetsExact(forward ForwardIndex, s ast.Symbol) []ast.Symbol {
+	if _, ok := forward[s]; ok {
+		return []ast.Symbol{s}
+	}
+	bare := ast.Symbol{Name: s.Name}
+	if s.Package != "" {
+		if _, ok := forward[bare]; ok {
+			return []ast.Symbol{bare}
+		}
+	}
+	if _, ok := forward[bare]; ok {
+		return []ast.Symbol{bare}
+	}
+	return []ast.Symbol{s}
+}
+
+// indexTargets 把符号展开为正向索引里的候选键。
+func indexTargets(forward ForwardIndex, s ast.Symbol) []ast.Symbol {
+	var out []ast.Symbol
+	if s.Package != "" {
+		if _, ok := forward[s]; ok {
+			return []ast.Symbol{s}
+		}
+		var matches []ast.Symbol
+		for k := range forward {
+			if k.Name == s.Name {
+				matches = append(matches, k)
+			}
+		}
+		if len(matches) == 1 {
+			return matches
+		}
+		return []ast.Symbol{s}
+	} else {
+		if _, ok := forward[s]; ok {
+			out = append(out, s)
+		}
+		// 类型未知时，顶层函数和所有同名方法都要尝试，避免漏掉真实调用链。
+		for k := range forward {
+			if k.Name == s.Name && k.Package != "" {
+				out = append(out, k)
+			}
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, s)
 	}
 	return out
 }
