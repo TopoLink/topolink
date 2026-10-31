@@ -56,7 +56,7 @@ func main() {
 	flag.StringVar(&profileOut, "profile-out", "", "write a library profile to this path after extraction")
 	flag.StringVar(&impactKey, "impact", "", "reverse-impact query, e.g. table:orders / method:GetUser / key:cache:user")
 	flag.StringVar(&troubleKey, "trouble", "", "troubleshooting lookup, e.g. err:order-not-found / log:load failed / timeout:context.WithTimeout")
-	flag.StringVar(&format, "format", "text", "output format: text|markdown|github")
+	flag.StringVar(&format, "format", "text", "output format: text|markdown|github|json")
 	flag.StringVar(&failOn, "fail-on", "none", "exit non-zero when findings reach severity: none|critical|high|medium|low (aliases: s0/s1/s2/s3)")
 	flag.StringVar(&diffRange, "diff", "", "blast-radius mode: 'auto' (PR base...HEAD), a git range, or empty for a full scan")
 	flag.StringVar(&diffFile, "diff-file", "", "analyze only the blast radius of a unified diff file")

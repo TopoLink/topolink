@@ -24,6 +24,14 @@ func render(findings []engine.Finding, format string) {
 		printFindings(findings)
 	case "markdown":
 		fmt.Print(report.Markdown(findings))
+	case "json":
+		data, err := report.JSON(findings)
+		if err != nil {
+			log.Printf("warning: render json: %v", err)
+			printFindings(findings)
+			return
+		}
+		fmt.Println(string(data))
 	default:
 		printFindings(findings)
 	}

@@ -280,7 +280,8 @@ Topolink is an honest, deterministic first pass — not a soundness-complete pro
 
 - [Architecture & repository conventions](docs/en/architecture.md)
 - [Rule catalog & detection spec](docs/en/rules.md)
-- Chinese originals: [`docs/03`](docs/03-技术架构与目录规范.md), [`docs/04`](docs/04-规则清单与识别规则.md)
+- [Adding a language adapter (Java next)](docs/en/language-adapters.md)
+- Chinese originals: [`docs/03`](docs/03-技术架构与目录规范.md), [`docs/04`](docs/04-规则清单与识别规则.md), [`docs/06`](docs/06-多语言适配器.md)
 
 ## Contributing
 

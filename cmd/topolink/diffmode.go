@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -79,9 +80,50 @@ func renderDiff(rep diffReport, format string) {
 		printImpactText(rep)
 	case "markdown":
 		fmt.Print(impactMarkdown(rep))
+	case "json":
+		data, err := diffJSON(rep)
+		if err != nil {
+			log.Printf("warning: render json: %v", err)
+			printImpactText(rep)
+			return
+		}
+		fmt.Println(string(data))
 	default:
 		printImpactText(rep)
 	}
+}
+
+func diffJSON(rep diffReport) ([]byte, error) {
+	payload := struct {
+		ChangedFunctions []string             `json:"changed_functions"`
+		ChangedTables    []string             `json:"changed_tables"`
+		ChangedEntries   []string             `json:"changed_entries"`
+		AffectedEntries  []string             `json:"affected_entries"`
+		Findings         []report.JSONFinding `json:"findings"`
+	}{
+		ChangedFunctions: changedFuncNames(rep.changedFuncs),
+		ChangedTables:    rep.changedTables,
+		ChangedEntries:   changedEntryIDs(rep.changedEntries),
+		AffectedEntries:  rep.affected,
+		Findings:         report.ToJSONFindings(rep.findings),
+	}
+	return json.MarshalIndent(payload, "", "  ")
+}
+
+func changedFuncNames(funcs []ast.FuncSummary) []string {
+	out := make([]string, 0, len(funcs))
+	for _, f := range funcs {
+		out = append(out, f.Symbol.Name)
+	}
+	return out
+}
+
+func changedEntryIDs(entries []ast.EntryNode) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.ID)
+	}
+	return out
 }
 
 func printImpactText(rep diffReport) {
