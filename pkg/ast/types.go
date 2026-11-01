@@ -83,6 +83,7 @@ type EntryNode struct {
 	ID            string // 稳定 ID，如 "http:GET:/api/orders"
 	Kind          EntryKind
 	Name          string   // 入口名称（路径 / method / topic / job name）
+	Topic         string   // Kafka topic（KafkaConsumer 入口）
 	Handler       Symbol   // 处理函数
 	Receiver      string   // HTTP 路由注册的接收者（如 gin 的 r、group 变量）
 	EnclosingFunc string   // 注册路由的函数（用于解析函数参数形式的路由组）

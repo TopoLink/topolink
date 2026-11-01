@@ -339,7 +339,8 @@ func classifyCall(callee string) CallKind {
 	case strings.Contains(l, "grpc.") || strings.HasSuffix(l, ".invoke"):
 		return CallGRPC
 	case strings.Contains(l, "kafka") || strings.Contains(l, "sarama") ||
-		strings.HasSuffix(l, ".send") || strings.HasSuffix(l, ".produce"):
+		strings.HasSuffix(l, ".send") || strings.HasSuffix(l, ".produce") ||
+		strings.HasSuffix(l, ".publish") || strings.HasSuffix(l, ".writemessages"):
 		return CallMQ
 	case isLockCallee(callee):
 		return CallLock

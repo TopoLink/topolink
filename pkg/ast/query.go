@@ -201,7 +201,7 @@ func grpcEntry(c map[string][]sitter.Node, path string, src []byte) (EntryNode, 
 
 	implType := ""
 	if impl := first(c, "grpc.impl"); impl != nil {
-		implType = extractImplType(impl, src)
+		implType = baseType(extractImplType(impl, src))
 	}
 	pos := regNode.StartPosition()
 
@@ -227,9 +227,27 @@ func kafkaEntry(c map[string][]sitter.Node, path string, src []byte) (EntryNode,
 		ID:        "kafka:" + name,
 		Kind:      EntryKafkaConsumer,
 		Name:      name,
+		Topic:     kafkaTopic(src),
 		Handler:   Symbol{Name: name},
 		SourceLoc: Loc{File: path, Line: int(pos.Row) + 1, Column: int(pos.Column) + 1},
 	}, true
+}
+
+// kafkaTopicRe / kafkaSubscribeRe 从消费者源码中提取 topic。
+// 常见写法：kafka.ReaderConfig{Topic: "payment.succeeded"} 或 Subscribe("topic")。
+var (
+	kafkaTopicRe     = regexp.MustCompile(`(?i)\bTopic:\s*"([^"]+)"`)
+	kafkaSubscribeRe = regexp.MustCompile(`(?i)Subscribe\w*\([^)]*"([^"]+)"`)
+)
+
+func kafkaTopic(src []byte) string {
+	if m := kafkaTopicRe.FindSubmatch(src); m != nil {
+		return string(m[1])
+	}
+	if m := kafkaSubscribeRe.FindSubmatch(src); m != nil {
+		return string(m[1])
+	}
+	return ""
 }
 
 // gormTerminal 是真正执行数据库操作的 gorm 方法（链式修饰方法不产生 DBOp）。
